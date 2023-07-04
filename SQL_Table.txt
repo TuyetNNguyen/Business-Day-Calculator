@@ -1,0 +1,162 @@
+CREATE TEMP FUNCTION epochTime(dt DATETIME)
+RETURN INT64
+AS (
+  CAST(DATETIME_DIFF(dt, DATETIME(1970,1,1,0,0,0), SECOND) AS INT64
+);
+
+CREATE TEMP FUNCTION calculateTimeDiff(startTime INT64, endTime INT64, isDay BOOL)
+RETURN FLOAT64
+LANGUAGE js
+AS r"""
+  var startDate = new Date(startTime * 1000);
+  var endDate = new Date(endTime * 1000);
+  var minutes = 0;
+  if(endDate < startDate) {return 0;}
+  var current = startDate;
+  var startHours = 0;
+  var endHours = 25;
+  var includeWeekends = true;
+
+  while (current <= endDate) {
+    if(current.getHours() >= startHours && current.getHours() < endHours &&
+    (includeWeekends ? current.getDay() != 0 && current.getDay() !== 6:true)){minutes++}
+    current.setTime(current.getTime() + 1000 * 60);
+  }
+  if (isDay) 
+    return(minutes / 60 / 24).toFixed(2);
+  return(munites / 60).toFixed(2);
+""";
+
+
+CREATE TEMP FUNCTION COUNT_WEEKDAYS_IN_MINS(
+  StartDate DATETIME,
+  EndDate DATETIME
+) RETURNS INT64 
+AS (
+  (DATETIME_DIFF(StartDate, EndDate, MINUTE)) - 
+  (DATETIME_DIFF(StartDate, EndDate, WEEK) * 2880) - 
+  (CASE 
+      WHEN
+      (
+        (FORMAT_DATE('%w', CAST(StartDate AS DATE)) = '0') OR
+        (FORMAT_DATE('%w', CAST(EndDate AS DATE)) = '0')
+      )
+      THEN 1440 ELSE 0 
+  END) -
+  (CASE 
+      WHEN
+      (
+        (FORMAT_DATE('%w', CAST(StartDate AS DATE)) = '6') OR
+        (FORMAT_DATE('%w', CAST(EndDate AS DATE)) = '6')
+      )
+      THEN 1440 ELSE 0 
+  END)
+);
+
+
+WITH assignee_team AS (
+SELECT *,
+ROW_NUMBER() OVER (PARTITION BY issue_id ORDER BY start_time ASC) AS index,
+
+COUNT_WEEKDAYS_IN_MINS(
+  CAST(LAG(start_time, 1) OVER (PARTITION BY issue_id ORDER BY start_time DESC) AS DATETIME),
+  CAST(start_time AS DATETIME)
+) AS diff_in_buz_mins,
+
+CASE
+  WHEN assignee in ("dummy name") THEN "Design_Team"
+  WHEN assignee in ("dummy names") THEN "Build_Team"
+ELSE "Buz_Team"
+END AS assignee_team
+FROM table1
+),
+
+total_build_in_mins AS (
+  SELECT 
+  issue_id, 
+  SUM(diff_in_buz_mins) AS total_build_in_mins,
+  COUNT(assignee_team) AS ct_build_asg_times
+FROM assignee_teams
+WHERE LOWER(assignee_team) = LOAWER("Build_team)
+GROUP BY issue_id, assignee_team
+),
+
+total_design_in_mins AS (
+  SELECT 
+  issue_id, 
+  SUM(diff_in_buz_mins) AS total_design_in_mins,
+  COUNT(assignee_team) AS ct_design_asg_times
+FROM assignee_teams
+WHERE LOWER(assignee_team) = LOAWER("design_team)
+GROUP BY issue_id, assignee_team
+),
+
+total_buz_in_mins AS (
+  SELECT 
+  issue_id, 
+  SUM(diff_in_buz_mins) AS total_buz_in_mins,
+  COUNT(assignee_team) AS ct_buz_asg_times
+FROM assignee_teams
+WHERE LOWER(assignee_team) = LOAWER("buz_team)
+GROUP BY issue_id, assignee_team
+),
+
+durations AS (
+SELECT
+  ast.issue_id,
+  ct_build_asg_times, 
+  ct_design_asg_times, 
+  ct_buz_asg_times,
+  FLOOR(b.total_build_in_mins / 1440) AS build_days, 
+  FLOOR(MOD(b.total_build_in_mins, 1440) / 60) AS build_hours, 
+  MOD(MOD(b.total_build_in_mins, 1440), 60) AS build_mins, 
+
+  FLOOR(b.total_design_in_mins / 1440) AS design_days, 
+  FLOOR(MOD(b.total_design_in_mins, 1440) / 60) AS design_hours, 
+  MOD(MOD(b.total_design_in_mins, 1440), 60) AS design_mins,
+
+  FLOOR(b.total_buz_in_mins / 1440) AS buz_days, 
+  FLOOR(MOD(b.total_buz_in_mins, 1440) / 60) AS buz_hours, 
+  MOD(MOD(b.total_buz_in_mins, 1440), 60) AS buz_mins
+
+FROM assignee_teams ast
+LEFT JOIN total_build_in_mins b
+  ON ast.issue_id = b.issue_id
+LEFT JOIN total_design_in_mins d
+  ON ast.issue_id = b.issue_id
+LEFT JOIN total_buz_in_mins buz
+  ON ast.issue_id = buz.issue_id
+),
+
+min_time_indexed_table as (
+SELECT 
+  issue_id,
+  index,
+  calculateTimeDiff(
+    epoTime(DATETIME(start_time)), epochTime(DATETIME(lead(start_time, 1)
+OVER(PARTITION BY issue_id ORDER BY start_time))) AS weekend_excluded_diff_in_days
+)
+
+SELECT 
+  t.issue_id, 
+  CONCAST(
+    CAST(build_days AS STRING), 'days',
+    CAST(build_hours AS STRING), 'hrs',
+    CAST(build_mins AS STRING), 'mins'
+  ) AS build_duration,
+  CONCAST(
+    CAST(design_days AS STRING), 'days',
+    CAST(design_hours AS STRING), 'hrs',
+    CAST(design_mins AS STRING), 'mins'
+  ) AS design_duration,
+  CONCAST(
+    CAST(buz_days AS STRING), 'days',
+    CAST(buz_hours AS STRING), 'hrs',
+    CAST(buz_mins AS STRING), 'mins'
+  ) AS buz_duration
+
+FROM min_time_indexed_table t 
+LEFT JOIN duration d
+ON t.issue_id = d.issue_id
+WHERE index = 1
+ORDER BY t.issue_id
